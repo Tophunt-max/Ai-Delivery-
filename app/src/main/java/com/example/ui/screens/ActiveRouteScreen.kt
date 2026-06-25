@@ -53,7 +53,7 @@ import com.google.android.gms.maps.model.LatLng
 import android.content.Context
 import kotlinx.coroutines.launch
 
-import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.*
 
 data class RuralLandmark(
     val name: String,
@@ -128,6 +128,7 @@ fun ActiveRouteScreen(
     var googleMapType by remember { mutableStateOf(com.google.maps.android.compose.MapType.NORMAL) }
     var leafletMapStyleType by remember { mutableStateOf("dark") } // "dark", "classic", "satellite"
     var isListExpanded by remember { mutableStateOf(false) }
+    var showRouteSequencerDialog by remember { mutableStateOf(false) }
 
     var selectedLandmark by remember { mutableStateOf<RuralLandmark?>(null) }
     var selectedParcel by remember { mutableStateOf<Parcel?>(null) }
@@ -668,6 +669,28 @@ fun ActiveRouteScreen(
                         Icon(imageVector = Icons.Default.WifiOff, contentDescription = "Offline Cache", tint = Color(0xFF38BDF8), modifier = Modifier.size(13.dp))
                         Spacer(modifier = Modifier.width(6.dp))
                         Text("Offline Route Cache Active", color = Color.White, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                    }
+                }
+
+                Surface(
+                    color = Color(0xFF1E293B).copy(alpha = 0.85f),
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier.clickable {
+                        showRouteSequencerDialog = true
+                    }.testTag("route_config_pill")
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        val routeLabel = when (viewModel.routeType) {
+                            "express" -> "Express: Priority COD"
+                            "flood" -> "Monsoon: Flood Bypass"
+                            else -> "Eco: Shortest Path"
+                        }
+                        Icon(imageVector = Icons.Default.Directions, contentDescription = "Route Engine", tint = Color(0xFF10B981), modifier = Modifier.size(13.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(routeLabel, color = Color.White, fontSize = 10.sp, fontWeight = FontWeight.Bold)
                     }
                 }
 
@@ -1508,6 +1531,196 @@ fun ActiveRouteScreen(
             )
         }
 
+        // ROUTE SEQUENCER & STOP MANAGER DIALOG
+        if (showRouteSequencerDialog) {
+            AlertDialog(
+                onDismissRequest = { showRouteSequencerDialog = false },
+                containerColor = Color(0xFF1E293B),
+                titleContentColor = Color.White,
+                textContentColor = Color(0xFF94A3B8),
+                title = {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(imageVector = Icons.Default.Directions, contentDescription = "Route Sequencer", tint = Color(0xFF10B981))
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("Route Optimizer & Sequence", fontWeight = FontWeight.Bold)
+                    }
+                },
+                text = {
+                    Column(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        Text(
+                            text = "Select active routing optimization algorithm:",
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = Color.White
+                        )
+                        
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            val activeType = viewModel.routeType
+                            val modes = listOf(
+                                Triple("eco", "Eco", "mode_eco"),
+                                Triple("express", "Express", "mode_express"),
+                                Triple("flood", "Monsoon", "mode_flood")
+                            )
+                            modes.forEach { (type, label, testTagStr) ->
+                                Button(
+                                    onClick = { viewModel.optimizeRouteType(type) },
+                                    colors = ButtonDefaults.buttonColors(
+                                        containerColor = if (activeType == type) Color(0xFF10B981) else Color(0xFF334155)
+                                    ),
+                                    shape = RoundedCornerShape(8.dp),
+                                    modifier = Modifier.weight(1f).testTag(testTagStr)
+                                ) {
+                                    Text(label, fontSize = 10.sp, maxLines = 1)
+                                }
+                            }
+                        }
+
+                        HorizontalDivider(color = Color(0xFF334155))
+
+                        Text(
+                            text = "Step-by-Step Delivery Stops List:",
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = Color.White
+                        )
+
+                        if (pendingParcels.isEmpty()) {
+                            Text(
+                                "No pending parcels to display sequence for.",
+                                color = Color(0xFF64748B),
+                                fontSize = 12.sp,
+                                modifier = Modifier.padding(vertical = 12.dp)
+                            )
+                        } else {
+                            val sortedPending = pendingParcels.sortedBy { it.deliverySequence }
+                            
+                            LazyColumn(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .heightIn(max = 240.dp),
+                                verticalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                itemsIndexed(sortedPending) { index, parcel ->
+                                    val dist = if (index == 0) {
+                                        calculateHaversineDistance(
+                                            riderLatLng.first, riderLatLng.second,
+                                            parcel.latitude ?: 25.61, parcel.longitude ?: 85.14
+                                        )
+                                    } else {
+                                        val prev = sortedPending[index - 1]
+                                        calculateHaversineDistance(
+                                            prev.latitude ?: 25.61, prev.longitude ?: 85.14,
+                                            parcel.latitude ?: 25.61, parcel.longitude ?: 85.14
+                                        )
+                                    }
+
+                                    Surface(
+                                        color = Color(0xFF0F172A),
+                                        shape = RoundedCornerShape(8.dp),
+                                        modifier = Modifier.fillMaxWidth()
+                                    ) {
+                                        Row(
+                                            modifier = Modifier.padding(8.dp),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.SpaceBetween
+                                        ) {
+                                            Column(modifier = Modifier.weight(1f)) {
+                                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                                    Surface(
+                                                        color = Color(0xFF10B981).copy(alpha = 0.2f),
+                                                        shape = RoundedCornerShape(4.dp)
+                                                    ) {
+                                                        Text(
+                                                            text = "#${parcel.deliverySequence}",
+                                                            color = Color(0xFF10B981),
+                                                            fontSize = 9.sp,
+                                                            fontWeight = FontWeight.Bold,
+                                                            modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp)
+                                                        )
+                                                    }
+                                                    Spacer(modifier = Modifier.width(6.dp))
+                                                    Text(
+                                                        text = parcel.customerName,
+                                                        color = Color.White,
+                                                        fontSize = 12.sp,
+                                                        fontWeight = FontWeight.Bold,
+                                                        maxLines = 1
+                                                    )
+                                                }
+                                                Spacer(modifier = Modifier.height(2.dp))
+                                                Text(
+                                                    text = "${parcel.company} • COD: ₹${parcel.codAmount}",
+                                                    color = Color(0xFF94A3B8),
+                                                    fontSize = 10.sp
+                                                )
+                                                Text(
+                                                    text = String.format("+ %.2f km leg distance", dist),
+                                                    color = Color(0xFF38BDF8),
+                                                    fontSize = 9.sp,
+                                                    fontWeight = FontWeight.SemiBold
+                                                )
+                                            }
+
+                                            Row {
+                                                IconButton(
+                                                    onClick = {
+                                                        if (index > 0) {
+                                                            val prevParcel = sortedPending[index - 1]
+                                                            viewModel.swapParcelSequences(parcel.id, prevParcel.id)
+                                                        }
+                                                    },
+                                                    enabled = index > 0,
+                                                    modifier = Modifier.size(24.dp).testTag("swap_up_${parcel.id}")
+                                                ) {
+                                                    Icon(
+                                                        imageVector = Icons.Default.ArrowUpward,
+                                                        contentDescription = "Move Up",
+                                                        tint = if (index > 0) Color.White else Color(0xFF334155),
+                                                        modifier = Modifier.size(16.dp)
+                                                    )
+                                                }
+                                                IconButton(
+                                                    onClick = {
+                                                        if (index < sortedPending.size - 1) {
+                                                            val nextParcel = sortedPending[index + 1]
+                                                            viewModel.swapParcelSequences(parcel.id, nextParcel.id)
+                                                        }
+                                                    },
+                                                    enabled = index < sortedPending.size - 1,
+                                                    modifier = Modifier.size(24.dp).testTag("swap_down_${parcel.id}")
+                                                ) {
+                                                    Icon(
+                                                        imageVector = Icons.Default.ArrowDownward,
+                                                        contentDescription = "Move Down",
+                                                        tint = if (index < sortedPending.size - 1) Color.White else Color(0xFF334155),
+                                                        modifier = Modifier.size(16.dp)
+                                                    )
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                },
+                confirmButton = {
+                    Button(
+                        onClick = { showRouteSequencerDialog = false },
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF10B981))
+                    ) {
+                        Text("Done")
+                    }
+                }
+            )
+        }
+
         // MIC PANEL VOICE ASSISTANT DIALOG
         if (showMicPanel) {
             var manualVoiceText by remember { mutableStateOf("") }
@@ -1621,7 +1834,9 @@ fun RealTimeLeafletMap(
     landmarks: List<RuralLandmark>,
     savedLandmarks: List<SavedLandmark>,
     riderLatLng: Pair<Double, Double>,
-    isSimulating: Boolean
+    isSimulating: Boolean,
+    mapStyleType: String,
+    routeType: String
 ) {
     var webViewRef by remember { mutableStateOf<android.webkit.WebView?>(null) }
 
@@ -1658,6 +1873,18 @@ fun RealTimeLeafletMap(
                     """{"name":"${sl.name.replace("\"", "\\\"")}","intelTip":"${sl.historicalFact.replace("\"", "\\\"")}","latitude":${sl.latitude},"longitude":${sl.longitude}}"""
                 } + "]"
 
+                val tileUrl = when (mapStyleType) {
+                    "classic" -> "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+                    "satellite" -> "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"
+                    else -> "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png"
+                }
+
+                val statusText = when (routeType) {
+                    "express" -> "Priority COD Express Active"
+                    "flood" -> "Flood Bypass Active"
+                    else -> "Eco-Route Shortest Path Active"
+                }
+
                 val htmlString = """
                     <!DOCTYPE html>
                     <html>
@@ -1688,7 +1915,7 @@ fun RealTimeLeafletMap(
                         <script>
                             var map = L.map('map', { zoomControl: false }).setView([${riderLatLng.first}, ${riderLatLng.second}], 14);
                             
-                            L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+                            L.tileLayer('$tileUrl', {
                                 subdomains: 'abcd',
                                 maxZoom: 20
                             }).addTo(map);
@@ -1764,7 +1991,7 @@ fun RealTimeLeafletMap(
                             });
 
                             var riderMarker = L.marker([${riderLatLng.first}, ${riderLatLng.second}], { icon: riderIcon })
-                                .bindPopup('<b>COURIER RIDER</b><br/>Simulating Eco-Route...')
+                                .bindPopup('<b>COURIER RIDER</b><br/>$statusText')
                                 .addTo(map);
 
                             function updateRiderPosition(lat, lng, isSimulating) {
@@ -1794,7 +2021,9 @@ fun RealTimeGoogleMap(
     landmarks: List<RuralLandmark>,
     savedLandmarks: List<SavedLandmark>,
     riderLatLng: Pair<Double, Double>,
-    isSimulating: Boolean
+    isSimulating: Boolean,
+    mapType: com.google.maps.android.compose.MapType,
+    routeType: String
 ) {
     val riderPosition = remember(riderLatLng) {
         LatLng(riderLatLng.first, riderLatLng.second)
@@ -1810,9 +2039,10 @@ fun RealTimeGoogleMap(
         )
     }
 
-    val mapProperties = remember {
+    val mapProperties = remember(mapType) {
         MapProperties(
-            isMyLocationEnabled = false
+            isMyLocationEnabled = false,
+            mapType = mapType
         )
     }
     val uiSettings = remember {
@@ -1836,10 +2066,15 @@ fun RealTimeGoogleMap(
         )
 
         // 2. Active courier position
+        val statusText = when (routeType) {
+            "express" -> "Priority COD Express Active"
+            "flood" -> "Flood Bypass Active"
+            else -> "Eco-Route Shortest Path Active"
+        }
         Marker(
             state = MarkerState(position = riderPosition),
             title = "COURIER RIDER",
-            snippet = if (isSimulating) "Simulating Eco-Route..." else "Active Location Tracking"
+            snippet = if (isSimulating) "Simulating $statusText" else "Active Location Tracking - $statusText"
         )
 
         // 3. Pending parcel locations
