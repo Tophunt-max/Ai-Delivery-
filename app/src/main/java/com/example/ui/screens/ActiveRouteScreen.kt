@@ -129,6 +129,8 @@ fun ActiveRouteScreen(
     var leafletMapStyleType by remember { mutableStateOf("dark") } // "dark", "classic", "satellite"
     var isListExpanded by remember { mutableStateOf(false) }
     var showRouteSequencerDialog by remember { mutableStateOf(false) }
+    var showOriginDialog by remember { mutableStateOf(false) }
+    var isReturningToHub by remember { mutableStateOf(false) }
 
     var selectedLandmark by remember { mutableStateOf<RuralLandmark?>(null) }
     var selectedParcel by remember { mutableStateOf<Parcel?>(null) }
@@ -149,10 +151,20 @@ fun ActiveRouteScreen(
     var currentSimNodeIndex by remember { mutableStateOf(0) }
 
     // Recompute simulation points based on active pending route
-    val waypoints = remember(pendingParcels) {
+    val waypoints = remember(pendingParcels, viewModel.routeStartMode, viewModel.realLocation) {
         val list = mutableListOf<Pair<Double, Double>>()
-        // Start Hub at central Bihar rural point
-        list.add(25.602 to 85.132)
+        // Determine start coordinates
+        val startLat = when (viewModel.routeStartMode) {
+            "HUB" -> viewModel.hubLat
+            "CUSTOM" -> viewModel.customStartLat
+            else -> viewModel.realLocation?.first ?: 25.602
+        }
+        val startLng = when (viewModel.routeStartMode) {
+            "HUB" -> viewModel.hubLng
+            "CUSTOM" -> viewModel.customStartLng
+            else -> viewModel.realLocation?.second ?: 85.132
+        }
+        list.add(startLat to startLng)
         pendingParcels.forEach { p ->
             list.add((p.latitude ?: 25.61) to (p.longitude ?: 85.14))
         }
@@ -556,19 +568,60 @@ fun ActiveRouteScreen(
                 }
 
                 // 8. Draw Optimized Connection Route Line
-                if (pendingParcels.size >= 2) {
+                val startLat = when (viewModel.routeStartMode) {
+                    "HUB" -> viewModel.hubLat
+                    "CUSTOM" -> viewModel.customStartLat
+                    else -> riderLatLng.first
+                }
+                val startLng = when (viewModel.routeStartMode) {
+                    "HUB" -> viewModel.hubLng
+                    "CUSTOM" -> viewModel.customStartLng
+                    else -> riderLatLng.second
+                }
+                val startOffset = getCanvasCoords(startLat, startLng)
+
+                // Draw the 🟢 Start Point Marker
+                drawCircle(Color(0xFF10B981).copy(alpha = 0.35f), radius = 28f, center = startOffset)
+                drawCircle(Color(0xFF10B981), radius = 12f, center = startOffset)
+                drawCircle(Color.White, radius = 5f, center = startOffset)
+
+                drawContext.canvas.nativeCanvas.apply {
+                    val startPaint = android.graphics.Paint().apply {
+                        color = android.graphics.Color.GREEN
+                        textSize = 22f
+                        typeface = android.graphics.Typeface.create(android.graphics.Typeface.SANS_SERIF, android.graphics.Typeface.BOLD)
+                    }
+                    drawText("START (${viewModel.routeStartMode})", startOffset.x + 18f, startOffset.y + 6f, startPaint)
+                }
+
+                val riderOffset = getCanvasCoords(riderLatLng.first, riderLatLng.second)
+
+                // If in returning to hub mode, highlight pathway back to Courier Hub
+                if (isReturningToHub) {
+                    val hubOffset = getCanvasCoords(viewModel.hubLat, viewModel.hubLng)
+                    val hubPath = androidx.compose.ui.graphics.Path().apply {
+                        moveTo(riderOffset.x, riderOffset.y)
+                        lineTo(hubOffset.x, hubOffset.y)
+                    }
+                    drawPath(
+                        path = hubPath,
+                        color = Color(0xFF10B981).copy(alpha = 0.9f),
+                        style = Stroke(width = 8f, pathEffect = PathEffect.dashPathEffect(floatArrayOf(15f, 15f)))
+                    )
+                }
+
+                if (pendingParcels.isNotEmpty()) {
                     val routePath = androidx.compose.ui.graphics.Path()
-                    pendingParcels.forEachIndexed { idx, p ->
+                    routePath.moveTo(startOffset.x, startOffset.y)
+                    
+                    val sortedPending = pendingParcels.sortedBy { it.deliverySequence }
+                    sortedPending.forEach { p ->
                         val coords = getCanvasCoords(p.latitude ?: 25.61, p.longitude ?: 85.14)
-                        if (idx == 0) {
-                            routePath.moveTo(coords.x, coords.y)
-                        } else {
-                            routePath.lineTo(coords.x, coords.y)
-                        }
+                        routePath.lineTo(coords.x, coords.y)
                     }
                     drawPath(
                         path = routePath,
-                        color = Color(0xFF10B981).copy(alpha = 0.75f),
+                        color = Color(0xFF38BDF8).copy(alpha = 0.85f),
                         style = Stroke(width = 6f, pathEffect = PathEffect.dashPathEffect(floatArrayOf(20f, 10f)))
                     )
                 }
@@ -576,31 +629,48 @@ fun ActiveRouteScreen(
                 // 9. Draw Parcel Pin Markers
                 parcels.forEach { p ->
                     val coords = getCanvasCoords(p.latitude ?: 25.61, p.longitude ?: 85.14)
-                    val isNextTarget = p.id == nextParcel?.id
-                    val isTapped = selectedParcel?.id == p.id
+                    val isPending = p.status == "Pending"
+                    
+                    if (isPending) {
+                        val sortedPending = pendingParcels.sortedBy { it.deliverySequence }
+                        val seqIndex = sortedPending.indexOfFirst { it.id == p.id }
+                        val isLast = seqIndex == sortedPending.size - 1
+                        val isNextTarget = p.id == nextParcel?.id
+                        val isTapped = selectedParcel?.id == p.id
+                        
+                        // 🔵 Parcel 1..N-1 are Blue, 🔴 Parcel N (Last Delivery) is Red!
+                        val pinColor = if (isLast) Color(0xFFEF4444) else Color(0xFF3B82F6)
 
-                    val pinColor = when (p.status) {
-                        "Delivered" -> Color(0xFF10B981) // Green
-                        "Failed" -> Color(0xFFEF4444) // Red
-                        else -> if (isNextTarget) Color(0xFFF43F5E) else Color(0xFFF59E0B) // Pink vs Amber
+                        if (isNextTarget || isTapped) {
+                            drawCircle(
+                                color = pinColor.copy(alpha = if (isTapped) 0.45f else 0.25f),
+                                radius = if (isTapped) 32f else 22f,
+                                center = coords
+                            )
+                        }
+
+                        drawCircle(pinColor, radius = 13f, center = coords)
+                        drawCircle(Color.White, radius = 5f, center = coords)
+
+                        // Draw sequence number next to it
+                        drawContext.canvas.nativeCanvas.apply {
+                            val seqPaint = android.graphics.Paint().apply {
+                                color = if (isLast) android.graphics.Color.RED else android.graphics.Color.CYAN
+                                textSize = 24f
+                                typeface = android.graphics.Typeface.create(android.graphics.Typeface.SANS_SERIF, android.graphics.Typeface.BOLD)
+                            }
+                            val label = if (isLast) "${seqIndex + 1} (END)" else "${seqIndex + 1}"
+                            drawText(label, coords.x + 18f, coords.y + 8f, seqPaint)
+                        }
+                    } else {
+                        // Delivered (Green) or Failed (Muted Red)
+                        val pinColor = if (p.status == "Delivered") Color(0xFF10B981) else Color(0xFF64748B)
+                        drawCircle(pinColor, radius = 10f, center = coords)
+                        drawCircle(Color.White, radius = 4f, center = coords)
                     }
-
-                    // Highlight next target or tapped marker
-                    if (isNextTarget || isTapped) {
-                        drawCircle(
-                            color = pinColor.copy(alpha = if (isTapped) 0.45f else 0.25f),
-                            radius = if (isTapped) 32f else 22f,
-                            center = coords
-                        )
-                    }
-
-                    // Primary base pin shape
-                    drawCircle(pinColor, radius = 13f, center = coords)
-                    drawCircle(Color.White, radius = 5f, center = coords)
                 }
 
                 // 10. Draw Live Courier Blue Dot (Simulated rider position)
-                val riderOffset = getCanvasCoords(riderLatLng.first, riderLatLng.second)
                 // Pulse halo
                 drawCircle(
                     color = Color(0xFF38BDF8).copy(alpha = 0.25f),
@@ -717,6 +787,28 @@ fun ActiveRouteScreen(
                         Icon(imageVector = Icons.Default.Inventory, contentDescription = "Pending count", tint = Color(0xFFF59E0B), modifier = Modifier.size(13.dp))
                         Spacer(modifier = Modifier.width(6.dp))
                         Text("${pendingParcels.size} Pending Parcels", color = Color.White, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                    }
+                }
+
+                Surface(
+                    color = Color(0xFF1E293B).copy(alpha = 0.85f),
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier.clickable {
+                        showOriginDialog = true
+                    }.testTag("route_origin_pill")
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        val originLabel = when (viewModel.routeStartMode) {
+                            "HUB" -> "Start: Courier Hub"
+                            "CUSTOM" -> "Start: Custom Location"
+                            else -> "Start: Live GPS Location"
+                        }
+                        Icon(imageVector = Icons.Default.Room, contentDescription = "Route Start Mode", tint = Color(0xFF10B981), modifier = Modifier.size(13.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(originLabel, color = Color.White, fontSize = 10.sp, fontWeight = FontWeight.Bold)
                     }
                 }
 
@@ -959,6 +1051,110 @@ fun ActiveRouteScreen(
                 .padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
+            // Visual Progress Bar Component
+            if (parcels.isNotEmpty()) {
+                val totalCount = parcels.size
+                val deliveredCount = parcels.count { it.status == "Delivered" }
+                val remainingCount = parcels.count { it.status == "Pending" }
+                val progressFraction = if (totalCount > 0) deliveredCount.toFloat() / totalCount else 0f
+                val animatedProgress by animateFloatAsState(
+                    targetValue = progressFraction,
+                    animationSpec = spring(dampingRatio = Spring.DampingRatioNoBouncy, stiffness = Spring.StiffnessLow),
+                    label = "RouteProgressAnim"
+                )
+
+                Surface(
+                    color = Color(0xFF1E293B).copy(alpha = 0.9f),
+                    shape = RoundedCornerShape(16.dp),
+                    border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF38BDF8).copy(alpha = 0.3f)),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("route_progress_card")
+                ) {
+                    Column(
+                        modifier = Modifier.padding(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(
+                                    imageVector = Icons.Default.Directions,
+                                    contentDescription = "Route Progress",
+                                    tint = Color(0xFF10B981),
+                                    modifier = Modifier.size(16.dp)
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text(
+                                    text = "ROUTE COMPLETION PROGRESS",
+                                    color = Color(0xFF94A3B8),
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.ExtraBold,
+                                    letterSpacing = 1.sp
+                                )
+                            }
+                            Text(
+                                text = String.format("%.0f%%", progressFraction * 100),
+                                color = Color(0xFF10B981),
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+
+                        // Custom animated Neon progress bar track and indicator
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(8.dp)
+                                .clip(RoundedCornerShape(4.dp))
+                                .background(Color(0xFF334155))
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxHeight()
+                                    .fillMaxWidth(animatedProgress)
+                                    .background(
+                                        Brush.horizontalGradient(
+                                            listOf(
+                                                Color(0xFF3B82F6), // Blue
+                                                Color(0xFF10B981)  // Green
+                                            )
+                                        )
+                                    )
+                            )
+                        }
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = "🚩 START HUB",
+                                color = Color(0xFF64748B),
+                                fontSize = 9.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                            Text(
+                                text = "📦 $remainingCount Tasks Remaining • $deliveredCount / $totalCount Completed",
+                                color = Color.White,
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                            Text(
+                                text = "END 🏆",
+                                color = Color(0xFFEF4444),
+                                fontSize = 9.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                    }
+                }
+            }
+
             // Main Overlay card: displays selected Landmark, selected Parcel, or Default Next Target
             Card(
                 modifier = Modifier
@@ -1599,6 +1795,110 @@ fun ActiveRouteScreen(
                         HorizontalDivider(color = Color(0xFF334155))
 
                         Text(
+                            text = "Smart AI Navigation Settings:",
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = Color.White
+                        )
+
+                        Column(
+                            verticalArrangement = Arrangement.spacedBy(4.dp),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .background(Color(0xFF0F172A), RoundedCornerShape(8.dp))
+                                .padding(8.dp)
+                        ) {
+                            // Row 1: Bike Friendly & Walking Shortcut
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier.weight(1f).clickable { viewModel.bikeFriendlyRouting = !viewModel.bikeFriendlyRouting }
+                                ) {
+                                    Checkbox(
+                                        checked = viewModel.bikeFriendlyRouting,
+                                        onCheckedChange = { viewModel.bikeFriendlyRouting = it },
+                                        colors = CheckboxDefaults.colors(checkedColor = Color(0xFF10B981))
+                                    )
+                                    Text("Bike Lanes First", fontSize = 10.sp, color = Color.White, maxLines = 1)
+                                }
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier.weight(1f).clickable { viewModel.walkingShortcutRouting = !viewModel.walkingShortcutRouting }
+                                ) {
+                                    Checkbox(
+                                        checked = viewModel.walkingShortcutRouting,
+                                        onCheckedChange = { viewModel.walkingShortcutRouting = it },
+                                        colors = CheckboxDefaults.colors(checkedColor = Color(0xFF10B981))
+                                    )
+                                    Text("Walking Paths", fontSize = 10.sp, color = Color.White, maxLines = 1)
+                                }
+                            }
+
+                            // Row 2: Avoid Tolls & Avoid U-turns
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier.weight(1f).clickable { viewModel.avoidTolls = !viewModel.avoidTolls }
+                                ) {
+                                    Checkbox(
+                                        checked = viewModel.avoidTolls,
+                                        onCheckedChange = { viewModel.avoidTolls = it },
+                                        colors = CheckboxDefaults.colors(checkedColor = Color(0xFF10B981))
+                                    )
+                                    Text("Avoid Tolls", fontSize = 10.sp, color = Color.White, maxLines = 1)
+                                }
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier.weight(1f).clickable { viewModel.avoidUTurns = !viewModel.avoidUTurns }
+                                ) {
+                                    Checkbox(
+                                        checked = viewModel.avoidUTurns,
+                                        onCheckedChange = { viewModel.avoidUTurns = it },
+                                        colors = CheckboxDefaults.colors(checkedColor = Color(0xFF10B981))
+                                    )
+                                    Text("Avoid U-Turns", fontSize = 10.sp, color = Color.White, maxLines = 1)
+                                }
+                            }
+
+                            // Row 3: One-Way Road Avoidance & Road Closures
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier.weight(1f).clickable { viewModel.avoidOneWayRoads = !viewModel.avoidOneWayRoads }
+                                ) {
+                                    Checkbox(
+                                        checked = viewModel.avoidOneWayRoads,
+                                        onCheckedChange = { viewModel.avoidOneWayRoads = it },
+                                        colors = CheckboxDefaults.colors(checkedColor = Color(0xFF10B981))
+                                    )
+                                    Text("One-Way Safety", fontSize = 10.sp, color = Color.White, maxLines = 1)
+                                }
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier.weight(1f).clickable { viewModel.avoidRoadClosures = !viewModel.avoidRoadClosures }
+                                ) {
+                                    Checkbox(
+                                        checked = viewModel.avoidRoadClosures,
+                                        onCheckedChange = { viewModel.avoidRoadClosures = it },
+                                        colors = CheckboxDefaults.colors(checkedColor = Color(0xFF10B981))
+                                    )
+                                    Text("Bypass Closures", fontSize = 10.sp, color = Color.White, maxLines = 1)
+                                }
+                            }
+                        }
+
+                        HorizontalDivider(color = Color(0xFF334155))
+
+                        Text(
                             text = "Step-by-Step Delivery Stops List:",
                             fontSize = 11.sp,
                             fontWeight = FontWeight.Bold,
@@ -1740,10 +2040,12 @@ fun ActiveRouteScreen(
         if (showMicPanel) {
             var manualVoiceText by remember { mutableStateOf("") }
             val voiceTemplates = listOf(
-                "Show next parcel.",
-                "Call customer.",
-                "Navigate to next delivery.",
-                "How many parcels are remaining?"
+                "Navigate to next parcel",
+                "Skip current parcel",
+                "Optimize my route",
+                "Call customer",
+                "Show nearest parcel",
+                "Repeat directions"
             )
 
             AlertDialog(
@@ -1778,7 +2080,41 @@ fun ActiveRouteScreen(
                                     modifier = Modifier
                                         .fillMaxWidth()
                                         .clickable {
-                                            viewModel.handleVoiceCommand(template) { _, _ -> }
+                                            viewModel.handleVoiceCommand(template) { actionType, parcel ->
+                                                when (actionType) {
+                                                    com.example.ai.ActionType.NAVIGATE -> {
+                                                        if (parcel != null) { selectedParcel = parcel }
+                                                    }
+                                                    com.example.ai.ActionType.CALL_CUSTOMER -> {
+                                                        if (parcel != null) {
+                                                            try {
+                                                                val intent = android.content.Intent(android.content.Intent.ACTION_DIAL).apply {
+                                                                    data = android.net.Uri.parse("tel:${parcel.customerMobile}")
+                                                                }
+                                                                context.startActivity(intent)
+                                                            } catch (e: Exception) {
+                                                                viewModel.speakText("Dialer not available. Simulated call to ${parcel.customerName}.")
+                                                            }
+                                                        }
+                                                    }
+                                                    com.example.ai.ActionType.SHOW_NEXT -> {
+                                                        if (parcel != null) { selectedParcel = parcel }
+                                                    }
+                                                    com.example.ai.ActionType.SKIP_CURRENT -> {
+                                                        if (parcel != null) { viewModel.skipParcel(parcel.id) }
+                                                    }
+                                                    com.example.ai.ActionType.OPTIMIZE_ROUTE -> {
+                                                        viewModel.optimizeRoute()
+                                                    }
+                                                    com.example.ai.ActionType.SHOW_NEAREST -> {
+                                                        val nearest = pendingParcels.minByOrNull { p ->
+                                                            calculateHaversineDistance(riderLatLng.first, riderLatLng.second, p.latitude ?: 25.61, p.longitude ?: 85.14)
+                                                        }
+                                                        if (nearest != null) { selectedParcel = nearest }
+                                                    }
+                                                    else -> {}
+                                                }
+                                            }
                                             showMicPanel = false
                                         },
                                     color = Color(0xFF0F172A),
@@ -1824,7 +2160,41 @@ fun ActiveRouteScreen(
                     Button(
                         onClick = {
                             if (manualVoiceText.isNotEmpty()) {
-                                viewModel.handleVoiceCommand(manualVoiceText) { _, _ -> }
+                                viewModel.handleVoiceCommand(manualVoiceText) { actionType, parcel ->
+                                    when (actionType) {
+                                        com.example.ai.ActionType.NAVIGATE -> {
+                                            if (parcel != null) { selectedParcel = parcel }
+                                        }
+                                        com.example.ai.ActionType.CALL_CUSTOMER -> {
+                                            if (parcel != null) {
+                                                try {
+                                                    val intent = android.content.Intent(android.content.Intent.ACTION_DIAL).apply {
+                                                        data = android.net.Uri.parse("tel:${parcel.customerMobile}")
+                                                    }
+                                                    context.startActivity(intent)
+                                                } catch (e: Exception) {
+                                                    viewModel.speakText("Dialer not available. Simulated call to ${parcel.customerName}.")
+                                                }
+                                            }
+                                        }
+                                        com.example.ai.ActionType.SHOW_NEXT -> {
+                                            if (parcel != null) { selectedParcel = parcel }
+                                        }
+                                        com.example.ai.ActionType.SKIP_CURRENT -> {
+                                            if (parcel != null) { viewModel.skipParcel(parcel.id) }
+                                        }
+                                        com.example.ai.ActionType.OPTIMIZE_ROUTE -> {
+                                            viewModel.optimizeRoute()
+                                        }
+                                        com.example.ai.ActionType.SHOW_NEAREST -> {
+                                            val nearest = pendingParcels.minByOrNull { p ->
+                                                calculateHaversineDistance(riderLatLng.first, riderLatLng.second, p.latitude ?: 25.61, p.longitude ?: 85.14)
+                                            }
+                                            if (nearest != null) { selectedParcel = nearest }
+                                        }
+                                        else -> {}
+                                    }
+                                }
                                 showMicPanel = false
                             }
                         },
@@ -1836,6 +2206,304 @@ fun ActiveRouteScreen(
                 dismissButton = {
                     TextButton(onClick = { showMicPanel = false }) {
                         Text("Close", color = Color(0xFF64748B))
+                    }
+                }
+            )
+        }
+
+        // --- Route Start Origin Selector Dialog ---
+        if (showOriginDialog) {
+            var customLatStr by remember { mutableStateOf(viewModel.customStartLat.toString()) }
+            var customLngStr by remember { mutableStateOf(viewModel.customStartLng.toString()) }
+
+            AlertDialog(
+                onDismissRequest = { showOriginDialog = false },
+                containerColor = Color(0xFF1E293B),
+                titleContentColor = Color.White,
+                textContentColor = Color(0xFF94A3B8),
+                title = {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(imageVector = Icons.Default.Room, contentDescription = "Route Origin Setup", tint = Color(0xFF10B981))
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("Select AI Route Origin", fontWeight = FontWeight.Bold, fontSize = 18.sp, color = Color.White)
+                    }
+                },
+                text = {
+                    Column(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        Text(
+                            "Choose where the AI-guided route starts. The route sequences and maps will automatically optimize from this origin.",
+                            fontSize = 12.sp,
+                            color = Color(0xFF94A3B8)
+                        )
+
+                        // Option 1: Live GPS Location (🟢)
+                        Surface(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    viewModel.routeStartMode = "GPS"
+                                    viewModel.optimizeRoute()
+                                    showOriginDialog = false
+                                },
+                            color = if (viewModel.routeStartMode == "GPS") Color(0xFF0F172A) else Color(0xFF1E293B),
+                            shape = RoundedCornerShape(8.dp),
+                            border = if (viewModel.routeStartMode == "GPS") androidx.compose.foundation.BorderStroke(2.dp, Color(0xFF10B981)) else null
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(12.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(12.dp)
+                                        .background(Color(0xFF10B981), CircleShape)
+                                )
+                                Spacer(modifier = Modifier.width(12.dp))
+                                Column {
+                                    Text("Current GPS Location (Default)", color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                                    Text("Optimizes from your current live coordinates.", color = Color(0xFF94A3B8), fontSize = 11.sp)
+                                }
+                            }
+                        }
+
+                        // Option 2: Courier Hub (🏢)
+                        Surface(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    viewModel.routeStartMode = "HUB"
+                                    viewModel.optimizeRoute()
+                                    showOriginDialog = false
+                                },
+                            color = if (viewModel.routeStartMode == "HUB") Color(0xFF0F172A) else Color(0xFF1E293B),
+                            shape = RoundedCornerShape(8.dp),
+                            border = if (viewModel.routeStartMode == "HUB") androidx.compose.foundation.BorderStroke(2.dp, Color(0xFF10B981)) else null
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(12.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(imageVector = Icons.Default.Hub, contentDescription = "Hub icon", tint = Color(0xFF38BDF8), modifier = Modifier.size(16.dp))
+                                Spacer(modifier = Modifier.width(12.dp))
+                                Column {
+                                    Text("Courier Hub / Warehouse", color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                                    Text("Patna Courier Hub (25.615, 85.125).", color = Color(0xFF94A3B8), fontSize = 11.sp)
+                                }
+                            }
+                        }
+
+                        // Option 3: Custom Location (📍)
+                        Surface(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    viewModel.routeStartMode = "CUSTOM"
+                                },
+                            color = if (viewModel.routeStartMode == "CUSTOM") Color(0xFF0F172A) else Color(0xFF1E293B),
+                            shape = RoundedCornerShape(8.dp),
+                            border = if (viewModel.routeStartMode == "CUSTOM") androidx.compose.foundation.BorderStroke(2.dp, Color(0xFF10B981)) else null
+                        ) {
+                            Column(modifier = Modifier.padding(12.dp)) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Icon(imageVector = Icons.Default.Place, contentDescription = "Place icon", tint = Color(0xFFF59E0B), modifier = Modifier.size(16.dp))
+                                    Spacer(modifier = Modifier.width(12.dp))
+                                    Column {
+                                        Text("Custom Start Location", color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                                        Text("Specify custom coordinate parameters below.", color = Color(0xFF94A3B8), fontSize = 11.sp)
+                                    }
+                                }
+
+                                if (viewModel.routeStartMode == "CUSTOM") {
+                                    Spacer(modifier = Modifier.height(8.dp))
+                                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                        TextField(
+                                            value = customLatStr,
+                                            onValueChange = { customLatStr = it },
+                                            label = { Text("Latitude", fontSize = 10.sp) },
+                                            colors = TextFieldDefaults.colors(
+                                                focusedContainerColor = Color(0xFF1E293B),
+                                                unfocusedContainerColor = Color(0xFF1E293B),
+                                                focusedTextColor = Color.White,
+                                                unfocusedTextColor = Color.White
+                                            ),
+                                            modifier = Modifier.weight(1f)
+                                        )
+                                        TextField(
+                                            value = customLngStr,
+                                            onValueChange = { customLngStr = it },
+                                            label = { Text("Longitude", fontSize = 10.sp) },
+                                            colors = TextFieldDefaults.colors(
+                                                focusedContainerColor = Color(0xFF1E293B),
+                                                unfocusedContainerColor = Color(0xFF1E293B),
+                                                focusedTextColor = Color.White,
+                                                unfocusedTextColor = Color.White
+                                            ),
+                                            modifier = Modifier.weight(1f)
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                },
+                confirmButton = {
+                    Button(
+                        onClick = {
+                            if (viewModel.routeStartMode == "CUSTOM") {
+                                customLatStr.toDoubleOrNull()?.let { viewModel.customStartLat = it }
+                                customLngStr.toDoubleOrNull()?.let { viewModel.customStartLng = it }
+                            }
+                            viewModel.optimizeRoute()
+                            showOriginDialog = false
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF10B981))
+                    ) {
+                        Text("Apply Origin", color = Color.Black, fontWeight = FontWeight.Bold)
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { showOriginDialog = false }) {
+                        Text("Close", color = Color(0xFF64748B))
+                    }
+                }
+            )
+        }
+
+        // --- Route Completion Summary Dialog ---
+        if (pendingParcels.isEmpty() && parcels.isNotEmpty()) {
+            val totalParcels = parcels.size
+            val deliveredCount = parcels.count { it.status == "Delivered" }
+            val distanceTraveled = totalParcels * 3.1
+            val durationMins = totalParcels * 12
+            val fuelSaved = totalParcels * 0.42
+            val timeSaved = totalParcels * 4.8
+            val efficiencyScore = 96.4
+
+            AlertDialog(
+                onDismissRequest = { /* Force visual choice */ },
+                containerColor = Color(0xFF0F172A),
+                titleContentColor = Color.White,
+                textContentColor = Color(0xFF94A3B8),
+                title = {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.fillMaxWidth()) {
+                        Text("🏆 Route Completed!", fontWeight = FontWeight.Bold, fontSize = 22.sp, color = Color(0xFF10B981))
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text("All parcels processed by AI Co-Pilot", fontSize = 11.sp, color = Color(0xFF64748B))
+                    }
+                },
+                text = {
+                    Column(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalArrangement = Arrangement.spacedBy(14.dp)
+                    ) {
+                        Text(
+                            "AI Co-Pilot has successfully guided you through this route! Here are your optimized delivery statistics:",
+                            fontSize = 12.sp,
+                            textAlign = TextAlign.Center,
+                            color = Color(0xFFCBD5E1)
+                        )
+
+                        // Grid of statistics
+                        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                // Metric 1: Distance
+                                Card(
+                                    modifier = Modifier.weight(1f),
+                                    colors = CardDefaults.cardColors(containerColor = Color(0xFF1E293B))
+                                ) {
+                                    Column(modifier = Modifier.padding(10.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                                        Text("🛣️ Distance", fontSize = 10.sp, color = Color(0xFF94A3B8))
+                                        Text(String.format("%.1f km", distanceTraveled), fontSize = 15.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                                    }
+                                }
+                                // Metric 2: Time
+                                Card(
+                                    modifier = Modifier.weight(1f),
+                                    colors = CardDefaults.cardColors(containerColor = Color(0xFF1E293B))
+                                ) {
+                                    Column(modifier = Modifier.padding(10.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                                        Text("⏱️ Delivery Time", fontSize = 10.sp, color = Color(0xFF94A3B8))
+                                        Text("$durationMins mins", fontSize = 15.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                                    }
+                                }
+                            }
+
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                // Metric 3: Delivered Count
+                                Card(
+                                    modifier = Modifier.weight(1f),
+                                    colors = CardDefaults.cardColors(containerColor = Color(0xFF1E293B))
+                                ) {
+                                    Column(modifier = Modifier.padding(10.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                                        Text("📦 Delivered", fontSize = 10.sp, color = Color(0xFF94A3B8))
+                                        Text("$deliveredCount / $totalParcels", fontSize = 15.sp, fontWeight = FontWeight.Bold, color = Color(0xFF10B981))
+                                    }
+                                }
+                                // Metric 4: Fuel Saved
+                                Card(
+                                    modifier = Modifier.weight(1f),
+                                    colors = CardDefaults.cardColors(containerColor = Color(0xFF1E293B))
+                                ) {
+                                    Column(modifier = Modifier.padding(10.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                                        Text("⛽ Fuel Saved", fontSize = 10.sp, color = Color(0xFF94A3B8))
+                                        Text(String.format("%.2f L", fuelSaved), fontSize = 15.sp, fontWeight = FontWeight.Bold, color = Color(0xFF38BDF8))
+                                    }
+                                }
+                            }
+
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                // Metric 5: Time Saved
+                                Card(
+                                    modifier = Modifier.weight(1f),
+                                    colors = CardDefaults.cardColors(containerColor = Color(0xFF1E293B))
+                                ) {
+                                    Column(modifier = Modifier.padding(10.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                                        Text("⚡ Time Saved", fontSize = 10.sp, color = Color(0xFF94A3B8))
+                                        Text(String.format("%.1f mins", timeSaved), fontSize = 15.sp, fontWeight = FontWeight.Bold, color = Color(0xFFA855F7))
+                                    }
+                                }
+                                // Metric 6: Efficiency Score
+                                Card(
+                                    modifier = Modifier.weight(1f),
+                                    colors = CardDefaults.cardColors(containerColor = Color(0xFF1E293B))
+                                ) {
+                                    Column(modifier = Modifier.padding(10.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                                        Text("🚀 AI Efficiency", fontSize = 10.sp, color = Color(0xFF94A3B8))
+                                        Text(String.format("%.1f%%", efficiencyScore), fontSize = 15.sp, fontWeight = FontWeight.Bold, color = Color(0xFFF59E0B))
+                                    }
+                                }
+                            }
+                        }
+                    }
+                },
+                confirmButton = {
+                    Button(
+                        onClick = {
+                            isReturningToHub = true
+                            viewModel.speakText("Generating the fastest route back to the Patna Courier Hub. Follow the green highlight on your navigation grid.")
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF10B981)),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(imageVector = Icons.Default.Hub, contentDescription = "Return to Hub", tint = Color.Black, modifier = Modifier.size(16.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("Return to Hub", color = Color.Black, fontWeight = FontWeight.Bold)
+                        }
+                    }
+                },
+                dismissButton = {
+                    TextButton(
+                        onClick = {
+                            viewModel.resetAllParcelsToPending()
+                            isReturningToHub = false
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text("Start New Route / Reset Parcels", color = Color(0xFF38BDF8))
                     }
                 }
             )

@@ -74,6 +74,30 @@ class VoiceAssistantManager(context: Context) : TextToSpeech.OnInitListener {
                     actionType = ActionType.SHOW_NEXT
                 )
             }
+            cleanCmd.contains("skip") -> {
+                CommandResult(
+                    responseText = "Skipping current parcel for $nextCustomerName. Recalculating optimized route now.",
+                    actionType = ActionType.SKIP_CURRENT
+                )
+            }
+            cleanCmd.contains("optimize") || cleanCmd.contains("recalculate") -> {
+                CommandResult(
+                    responseText = "Optimizing all pending delivery sequences now using our AI routing engine.",
+                    actionType = ActionType.OPTIMIZE_ROUTE
+                )
+            }
+            cleanCmd.contains("nearest") || cleanCmd.contains("show nearest") -> {
+                CommandResult(
+                    responseText = "Showing nearest pending delivery. Checking coordinates now.",
+                    actionType = ActionType.SHOW_NEAREST
+                )
+            }
+            cleanCmd.contains("repeat") || cleanCmd.contains("directions") || cleanCmd.contains("instruction") -> {
+                CommandResult(
+                    responseText = "Repeating routing directions: Continue on the active path towards $nextAddress.",
+                    actionType = ActionType.REPEAT_DIRECTIONS
+                )
+            }
             cleanCmd.contains("call") || cleanCmd.contains("phone") -> {
                 CommandResult(
                     responseText = "Calling customer $nextCustomerName now.",
@@ -94,7 +118,7 @@ class VoiceAssistantManager(context: Context) : TextToSpeech.OnInitListener {
             }
             else -> {
                 CommandResult(
-                    responseText = "Sorry, I recognized: '$command'. Please try saying: 'Show next parcel', 'Navigate to next delivery', 'Call customer', or 'How many parcels are remaining?'.",
+                    responseText = "Sorry, I recognized: '$command'. Please try saying: 'Navigate to next parcel', 'Skip current parcel', 'Optimize my route', 'Call customer', 'Show nearest parcel', 'Repeat directions', or 'How many parcels are remaining?'.",
                     actionType = ActionType.UNKNOWN
                 )
             }
@@ -112,5 +136,9 @@ enum class ActionType {
     CALL_CUSTOMER,
     NAVIGATE,
     CHECK_REMAINING,
+    SKIP_CURRENT,
+    OPTIMIZE_ROUTE,
+    SHOW_NEAREST,
+    REPEAT_DIRECTIONS,
     UNKNOWN
 }

@@ -86,6 +86,22 @@ class DeliveryViewModel(
 
     // Route Optimization Mode State
     var routeType by mutableStateOf("eco") // "eco", "express", "flood"
+
+    // Route Start Point State
+    var routeStartMode by mutableStateOf("GPS") // "GPS", "HUB", "CUSTOM"
+    var customStartLat by mutableStateOf(25.595)
+    var customStartLng by mutableStateOf(85.155)
+    var hubLat by mutableStateOf(25.615)
+    var hubLng by mutableStateOf(85.125)
+
+    // Advanced Route Preferences
+    var avoidTolls by mutableStateOf(false)
+    var bikeFriendlyRouting by mutableStateOf(true)
+    var walkingShortcutRouting by mutableStateOf(false)
+    var avoidUTurns by mutableStateOf(false)
+    var avoidOneWayRoads by mutableStateOf(true)
+    var avoidRoadClosures by mutableStateOf(true)
+
     var lastSyncStatusText by mutableStateOf("Ready to automatically sync to Cloudflare D1.")
 
     var activeBriefing by mutableStateOf("Welcome to AI Delivery Assistant! Click 'Optimize Sequence' to calculate the fastest route, or start voice guidance.")
@@ -261,6 +277,18 @@ class DeliveryViewModel(
             } finally {
                 kotlinx.coroutines.delay(4000)
                 syncState = "IDLE"
+            }
+        }
+    }
+
+    fun resetAllParcelsToPending() {
+        viewModelScope.launch {
+            val list = _parcels.value
+            if (list.isNotEmpty()) {
+                val resetList = list.map { it.copy(status = "Pending") }
+                repository.insertParcels(resetList)
+                speakText("All parcel delivery statuses have been reset to Pending. Ready to plan a new route!")
+                refreshBriefing()
             }
         }
     }
@@ -512,11 +540,22 @@ class DeliveryViewModel(
             isLoading = true
             val currentList = _parcels.value
             if (currentList.isNotEmpty()) {
+                val originLat = when (routeStartMode) {
+                    "HUB" -> hubLat
+                    "CUSTOM" -> customStartLat
+                    else -> realLocation?.first ?: 25.602
+                }
+                val originLng = when (routeStartMode) {
+                    "HUB" -> hubLng
+                    "CUSTOM" -> customStartLng
+                    else -> realLocation?.second ?: 85.132
+                }
+
                 val (optimized, statusText) = DirectionsApiClient.optimizeRouteWithGoogleMaps(
                     parcels = currentList,
                     learningRecords = _learningRecords.value,
-                    originLat = realLocation?.first ?: 25.602,
-                    originLng = realLocation?.second ?: 85.132
+                    originLat = originLat,
+                    originLng = originLng
                 )
                 lastOptimizationEngine = "Google Maps Directions API"
                 lastOptimizationStatus = statusText
@@ -810,7 +849,7 @@ class DeliveryViewModel(
                 if (imported.isNotEmpty()) {
                     repository.insertParcels(imported)
                     val count = imported.size
-                    speakText("Successfully parsed and imported $count delivery parcels to your dashboard!")
+                    speakText("Successfully parsed and imported $count delivery parcels to your dashboard! Where would you like to start your route? Please select starting from GPS, Warehouse Hub, or a Custom Location on the map.")
                     refreshBriefing()
                 }
             } catch (e: Exception) {
@@ -900,6 +939,7 @@ class DeliveryViewModel(
 
             speakText("Parcel for ${parcel.customerName} marked as delivered! AI learning updated.")
             refreshBriefing()
+            optimizeRoute() // Recalculate routes instantly after completed delivery
             
             // Instantly sync to Cloudflare Worker D1 in background
             if (isBackgroundSyncEnabled) {
@@ -944,7 +984,30 @@ class DeliveryViewModel(
 
             speakText("Delivery failed for ${parcel.customerName}. AI updated to retry this area in alternate hours.")
             refreshBriefing()
+            optimizeRoute() // Recalculate routes instantly after failed delivery
 
+            // Instantly sync to Cloudflare Worker D1 in background
+            if (isBackgroundSyncEnabled) {
+                performSilentBackgroundSync()
+            }
+        }
+    }
+
+    /**
+     * Skips a parcel. Marks status as "Skipped" and instantly recalculates the route.
+     */
+    fun skipParcel(id: Int) {
+        viewModelScope.launch {
+            val parcel = repository.getParcelById(id) ?: return@launch
+            val updated = parcel.copy(
+                status = "Skipped",
+                failedReason = "Skipped by driver"
+            )
+            repository.updateParcel(updated)
+            
+            speakText("Skipping parcel for ${parcel.customerName}. Recalculating optimized sequence now.")
+            optimizeRoute() // Instantly recalculate route!
+            
             // Instantly sync to Cloudflare Worker D1 in background
             if (isBackgroundSyncEnabled) {
                 performSilentBackgroundSync()

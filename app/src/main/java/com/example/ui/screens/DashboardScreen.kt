@@ -447,6 +447,114 @@ fun DashboardScreen(
 
             Spacer(modifier = Modifier.height(24.dp))
 
+            // Visual Route Progress Bar Card (Futuristic Neon Style)
+            if (parcels.isNotEmpty()) {
+                val totalCount = parcels.size
+                val deliveredCount = parcels.count { it.status == "Delivered" }
+                val remainingCount = parcels.count { it.status == "Pending" }
+                val progressFraction = if (totalCount > 0) deliveredCount.toFloat() / totalCount else 0f
+                val animatedProgress by animateFloatAsState(
+                    targetValue = progressFraction,
+                    animationSpec = spring(dampingRatio = Spring.DampingRatioNoBouncy, stiffness = Spring.StiffnessLow),
+                    label = "DashboardProgressAnim"
+                )
+
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("dashboard_progress_card"),
+                    shape = RoundedCornerShape(24.dp),
+                    colors = CardDefaults.cardColors(containerColor = com.example.ui.theme.CyberSurface),
+                    border = CardDefaults.outlinedCardBorder().copy(
+                        brush = Brush.verticalGradient(
+                            listOf(
+                                com.example.ui.theme.NeonEmerald.copy(alpha = 0.4f),
+                                Color.Transparent
+                            )
+                        )
+                    )
+                ) {
+                    Column(modifier = Modifier.padding(20.dp)) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(
+                                    imageVector = Icons.Default.DirectionsRun,
+                                    contentDescription = "Active Route Progress",
+                                    tint = com.example.ui.theme.NeonEmerald,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text(
+                                    text = "ACTIVE ROUTE COMPLETED",
+                                    color = com.example.ui.theme.NeonEmerald,
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.ExtraBold,
+                                    letterSpacing = 1.5.sp
+                                )
+                            }
+                            Text(
+                                text = String.format("%.0f%%", progressFraction * 100),
+                                color = com.example.ui.theme.NeonEmerald,
+                                fontSize = 15.sp,
+                                fontWeight = FontWeight.Black
+                            )
+                        }
+
+                        Spacer(modifier = Modifier.height(12.dp))
+
+                        // Progress Bar Track with Neon Glow Indicator
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(12.dp)
+                                .clip(RoundedCornerShape(6.dp))
+                                .background(Color(0xFF1E293B))
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxHeight()
+                                    .fillMaxWidth(animatedProgress)
+                                    .background(
+                                        Brush.horizontalGradient(
+                                            listOf(
+                                                com.example.ui.theme.NeonCyan,
+                                                com.example.ui.theme.NeonEmerald
+                                            )
+                                        )
+                                    )
+                            )
+                        }
+
+                        Spacer(modifier = Modifier.height(10.dp))
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = "Remaining Stops: $remainingCount",
+                                color = com.example.ui.theme.TextSecondary,
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                            Text(
+                                text = "$deliveredCount / $totalCount Delivered",
+                                color = com.example.ui.theme.TextPrimary,
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(16.dp))
+            }
+
             // Main Metrics Grid
             Text(
                 text = "Today's Deliveries",
