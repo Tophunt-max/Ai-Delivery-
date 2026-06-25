@@ -1,0 +1,12 @@
+name = "delivery-sync"
+main = "cloudflare_worker.js"
+compatibility_date = "2024-01-01"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "delivery-db"
+database_id = "1fbb8374-62a7-4c14-ad51-d19824fcc869"
+
+[[r2_buckets]]
+binding = "MY_BUCKET"
+bucket_name = "delivery-proofs"

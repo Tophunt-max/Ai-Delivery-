@@ -1,0 +1,6 @@
+{
+  "name": "AI Delivery Assistant",
+  "description": "AI-powered delivery route optimizer, local learning landmarks assistant, and voice navigator.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
