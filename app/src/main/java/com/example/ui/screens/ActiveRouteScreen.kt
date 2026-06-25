@@ -120,7 +120,7 @@ fun ActiveRouteScreen(
     var queryLoading by remember { mutableStateOf(false) }
 
     // MAP INTERACTIVES: Zoom, Pan and Sizes
-    var mapMode by remember { mutableStateOf("gmaps") } // "gmaps", "radar" or "osm"
+    var mapMode by remember { mutableStateOf("gmaps_js") } // "gmaps_js", "gmaps", "radar" or "osm"
     var zoomScale by remember { mutableStateOf(1f) }
     var panOffset by remember { mutableStateOf(Offset.Zero) }
     var canvasSize by remember { mutableStateOf(IntSize.Zero) }
@@ -620,6 +620,18 @@ fun ActiveRouteScreen(
                 )
             }
         }
+    } else if (mapMode == "gmaps_js") {
+            // Google Maps JavaScript API Live Map Display
+            Box(modifier = Modifier.fillMaxSize()) {
+                RealTimeGoogleMapsJSMap(
+                    pendingParcels = pendingParcels,
+                    landmarks = landmarks,
+                    savedLandmarks = savedLandmarks,
+                    riderLatLng = riderLatLng,
+                    isSimulating = isSimulating,
+                    routeType = viewModel.routeType
+                )
+            }
     } else if (mapMode == "gmaps") {
             // Native Google Maps SDK Live Map Display
             Box(modifier = Modifier.fillMaxSize()) {
@@ -713,9 +725,10 @@ fun ActiveRouteScreen(
                     shape = RoundedCornerShape(12.dp),
                     modifier = Modifier.clickable {
                         mapMode = when (mapMode) {
+                            "gmaps_js" -> "gmaps"
                             "gmaps" -> "radar"
                             "radar" -> "osm"
-                            else -> "gmaps"
+                            else -> "gmaps_js"
                         }
                     }.testTag("map_mode_toggle_pill")
                 ) {
@@ -724,12 +737,14 @@ fun ActiveRouteScreen(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         val icon = when (mapMode) {
+                            "gmaps_js" -> Icons.Default.Language
                             "gmaps" -> Icons.Default.Map
                             "radar" -> Icons.Default.Hub
                             else -> Icons.Default.Language
                         }
                         val text = when (mapMode) {
-                            "gmaps" -> "Google Maps Active"
+                            "gmaps_js" -> "Google Maps JS Active"
+                            "gmaps" -> "Google Maps SDK Active"
                             "radar" -> "Radar Grid Active"
                             else -> "OSM Leaflet Map"
                         }
@@ -739,8 +754,8 @@ fun ActiveRouteScreen(
                     }
                 }
 
-                // Map Style Pill (Only visible when not Radar)
-                if (mapMode != "radar") {
+                // Map Style Pill (Only visible when not Radar and not Google Maps JS)
+                if (mapMode != "radar" && mapMode != "gmaps_js") {
                     Surface(
                         color = Color(0xFF1E293B).copy(alpha = 0.85f),
                         shape = RoundedCornerShape(12.dp),
@@ -1826,6 +1841,265 @@ fun ActiveRouteScreen(
             )
         }
     }
+}
+
+@Composable
+fun RealTimeGoogleMapsJSMap(
+    pendingParcels: List<Parcel>,
+    landmarks: List<RuralLandmark>,
+    savedLandmarks: List<SavedLandmark>,
+    riderLatLng: Pair<Double, Double>,
+    isSimulating: Boolean,
+    routeType: String
+) {
+    var webViewRef by remember { mutableStateOf<android.webkit.WebView?>(null) }
+
+    LaunchedEffect(webViewRef, riderLatLng, isSimulating) {
+        webViewRef?.let { wv ->
+            wv.evaluateJavascript(
+                "updateRiderPosition(${riderLatLng.first}, ${riderLatLng.second}, $isSimulating)",
+                null
+            )
+        }
+    }
+
+    androidx.compose.ui.viewinterop.AndroidView(
+        factory = { ctx ->
+            android.webkit.WebView(ctx).apply {
+                settings.javaScriptEnabled = true
+                settings.domStorageEnabled = true
+                webViewClient = android.webkit.WebViewClient()
+                
+                val startHubLat = 25.602
+                val startHubLng = 85.132
+
+                val parcelsJson = "[" + pendingParcels.joinToString(",") { p ->
+                    """{"customerName":"${p.customerName.replace("\"", "\\\"")}","fullAddress":"${p.fullAddress.replace("\"", "\\\"")}","latitude":${p.latitude ?: 25.61},"longitude":${p.longitude ?: 85.14},"codAmount":${p.codAmount}}"""
+                } + "]"
+
+                val landmarksJson = "[" + landmarks.joinToString(",") { l ->
+                    """{"name":"${l.name.replace("\"", "\\\"")}","intelTip":"${l.intelTip.replace("\"", "\\\"")}","latitude":${l.latitude},"longitude":${l.longitude}}"""
+                } + "]"
+
+                val savedLandmarksJson = "[" + savedLandmarks.joinToString(",") { sl ->
+                    """{"name":"${sl.name.replace("\"", "\\\"")}","intelTip":"${sl.historicalFact.replace("\"", "\\\"")}","latitude":${sl.latitude},"longitude":${sl.longitude}}"""
+                } + "]"
+
+                val apiKey = try { com.example.BuildConfig.GOOGLE_MAPS_API_KEY } catch (e: Exception) { "" }
+
+                val htmlString = """
+                    <!DOCTYPE html>
+                    <html>
+                    <head>
+                        <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+                        <style>
+                            body { padding: 0; margin: 0; background: #0b0f19; }
+                            html, body, #map { height: 100%; width: 100vw; }
+                        </style>
+                        <script>
+                            var map;
+                            var riderMarker;
+                            var markers = [];
+                            var pathLine;
+
+                            function initMap() {
+                                var centerLatLng = { lat: ${riderLatLng.first}, lng: ${riderLatLng.second} };
+                                map = new google.maps.Map(document.getElementById('map'), {
+                                    zoom: 14,
+                                    center: centerLatLng,
+                                    disableDefaultUI: true,
+                                    zoomControl: true,
+                                    styles: [
+                                        { "elementType": "geometry", "stylers": [{ "color": "#1e293b" }] },
+                                        { "elementType": "labels.text.stroke", "stylers": [{ "color": "#0f172a" }] },
+                                        { "elementType": "labels.text.fill", "stylers": [{ "color": "#94a3b8" }] },
+                                        { "featureType": "administrative.locality", "elementType": "labels.text.fill", "stylers": [{ "color": "#cbd5e1" }] },
+                                        { "featureType": "poi", "elementType": "labels.text.fill", "stylers": [{ "color": "#10b981" }] },
+                                        { "featureType": "poi.park", "elementType": "geometry", "stylers": [{ "color": "#0f172a" }] },
+                                        { "featureType": "poi.park", "elementType": "labels.text.fill", "stylers": [{ "color": "#475569" }] },
+                                        { "featureType": "road", "elementType": "geometry", "stylers": [{ "color": "#334155" }] },
+                                        { "featureType": "road", "elementType": "geometry.stroke", "stylers": [{ "color": "#1e293b" }] },
+                                        { "featureType": "road", "elementType": "labels.text.fill", "stylers": [{ "color": "#94a3b8" }] },
+                                        { "featureType": "road.highway", "elementType": "geometry", "stylers": [{ "color": "#475569" }] },
+                                        { "featureType": "road.highway", "elementType": "geometry.stroke", "stylers": [{ "color": "#1e293b" }] },
+                                        { "featureType": "road.highway", "elementType": "labels.text.fill", "stylers": [{ "color": "#f8fafc" }] },
+                                        { "featureType": "water", "elementType": "geometry", "stylers": [{ "color": "#0f172a" }] },
+                                        { "featureType": "water", "elementType": "labels.text.fill", "stylers": [{ "color": "#475569" }] }
+                                    ]
+                                });
+
+                                var hubLatLng = { lat: $startHubLat, lng: $startHubLng };
+                                var hubMarker = new google.maps.Marker({
+                                    position: hubLatLng,
+                                    map: map,
+                                    title: "BIHAR CENTRAL ROUTE HUB",
+                                    label: "🏠"
+                                });
+                                var hubInfoWindow = new google.maps.InfoWindow({
+                                    content: '<div style="color: #0f172a; font-family: sans-serif; padding: 4px;"><b>BIHAR CENTRAL ROUTE HUB</b><br/>Starting point</div>'
+                                });
+                                hubMarker.addListener('click', function() {
+                                    hubInfoWindow.open(map, hubMarker);
+                                });
+
+                                riderMarker = new google.maps.Marker({
+                                    position: centerLatLng,
+                                    map: map,
+                                    title: "COURIER RIDER",
+                                    icon: {
+                                        path: google.maps.SymbolPath.CIRCLE,
+                                        scale: 12,
+                                        fillColor: "#10b981",
+                                        fillOpacity: 1,
+                                        strokeColor: "#ffffff",
+                                        strokeWeight: 3
+                                    }
+                                });
+                                var riderInfoWindow = new google.maps.InfoWindow({
+                                    content: '<div style="color: #0f172a; font-family: sans-serif; padding: 4px;"><b>COURIER RIDER</b><br/>Active Status</div>'
+                                });
+                                riderMarker.addListener('click', function() {
+                                    riderInfoWindow.open(map, riderMarker);
+                                });
+
+                                var parcels = $parcelsJson;
+                                var latlngs = [hubLatLng];
+                                
+                                parcels.forEach(function(p) {
+                                    if (p.latitude && p.longitude) {
+                                        var parcelLatLng = { lat: p.latitude, lng: p.longitude };
+                                        latlngs.push(parcelLatLng);
+                                        
+                                        var marker = new google.maps.Marker({
+                                            position: parcelLatLng,
+                                            map: map,
+                                            title: p.customerName,
+                                            icon: {
+                                                path: google.maps.SymbolPath.CIRCLE,
+                                                scale: 8,
+                                                fillColor: "#f43f5e",
+                                                fillOpacity: 1,
+                                                strokeColor: "#ffffff",
+                                                strokeWeight: 2
+                                            }
+                                        });
+
+                                        var infoWindow = new google.maps.InfoWindow({
+                                            content: '<div style="color: #0f172a; font-family: sans-serif; padding: 4px;">' +
+                                                     '<b>' + p.customerName + '</b><br/>' +
+                                                     p.fullAddress + '<br/>' +
+                                                     '<b>COD: ₹' + p.codAmount + '</b>' +
+                                                     '</div>'
+                                        });
+
+                                        marker.addListener('click', function() {
+                                            infoWindow.open(map, marker);
+                                        });
+                                        
+                                        markers.push(marker);
+                                    }
+                                });
+
+                                pathLine = new google.maps.Polyline({
+                                    path: latlngs,
+                                    geodesic: true,
+                                    strokeColor: '#10b981',
+                                    strokeOpacity: 0.8,
+                                    strokeWeight: 4,
+                                    map: map
+                                });
+
+                                var landmarks = $landmarksJson;
+                                landmarks.forEach(function(l) {
+                                    if (l.latitude && l.longitude) {
+                                        var landmarkLatLng = { lat: l.latitude, lng: l.longitude };
+                                        var marker = new google.maps.Marker({
+                                            position: landmarkLatLng,
+                                            map: map,
+                                            title: l.name,
+                                            icon: {
+                                                path: google.maps.SymbolPath.CIRCLE,
+                                                scale: 9,
+                                                fillColor: "#a855f7",
+                                                fillOpacity: 1,
+                                                strokeColor: "#0f172a",
+                                                strokeWeight: 2
+                                            }
+                                        });
+
+                                        var infoWindow = new google.maps.InfoWindow({
+                                            content: '<div style="color: #0f172a; font-family: sans-serif; padding: 4px;">' +
+                                                     '<b>' + l.name + '</b><br/>' +
+                                                     l.intelTip +
+                                                     '</div>'
+                                        });
+
+                                        marker.addListener('click', function() {
+                                            infoWindow.open(map, marker);
+                                        });
+                                        
+                                        markers.push(marker);
+                                    }
+                                });
+
+                                var savedLandmarks = $savedLandmarksJson;
+                                savedLandmarks.forEach(function(sl) {
+                                    if (sl.latitude && sl.longitude) {
+                                        var slLatLng = { lat: sl.latitude, lng: sl.longitude };
+                                        var marker = new google.maps.Marker({
+                                            position: slLatLng,
+                                            map: map,
+                                            title: sl.name,
+                                            icon: {
+                                                path: google.maps.SymbolPath.CIRCLE,
+                                                scale: 9,
+                                                fillColor: "#38bdf8",
+                                                fillOpacity: 1,
+                                                strokeColor: "#ffffff",
+                                                strokeWeight: 2
+                                            }
+                                        });
+
+                                        var infoWindow = new google.maps.InfoWindow({
+                                            content: '<div style="color: #0f172a; font-family: sans-serif; padding: 4px;">' +
+                                                     '<b>' + sl.name + '</b><br/>' +
+                                                     sl.intelTip +
+                                                     '</div>'
+                                        });
+
+                                        marker.addListener('click', function() {
+                                            infoWindow.open(map, marker);
+                                        });
+                                        
+                                        markers.push(marker);
+                                    }
+                                });
+                            }
+
+                            function updateRiderPosition(lat, lng, isSimulating) {
+                                var newLatLng = { lat: lat, lng: lng };
+                                if (riderMarker) {
+                                    riderMarker.setPosition(newLatLng);
+                                    if (isSimulating && map) {
+                                        map.panTo(newLatLng);
+                                    }
+                                }
+                            }
+                        </script>
+                        <script src="https://maps.googleapis.com/maps/api/js?key=${apiKey}&callback=initMap" async defer></script>
+                    </head>
+                    <body>
+                        <div id="map"></div>
+                    </body>
+                    </html>
+                """.trimIndent()
+
+                loadDataWithBaseURL("https://maps.googleapis.com", htmlString, "text/html", "UTF-8", null)
+                webViewRef = this
+            }
+        },
+        modifier = Modifier.fillMaxSize()
+    )
 }
 
 @Composable
