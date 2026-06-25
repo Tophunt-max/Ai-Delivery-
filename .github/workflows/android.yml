@@ -30,11 +30,13 @@ jobs:
             echo "debug.keystore.base64 not found, relying on default auto-generated keystore"
           fi
 
-      - name: Grant Execute Permission to Gradlew
-        run: chmod +x gradlew
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '9.3.1'
 
       - name: Build with Gradle
-        run: ./gradlew assembleDebug
+        run: gradle assembleDebug
 
       - name: Upload Build Artifacts (APKs)
         uses: actions/upload-artifact@v4
